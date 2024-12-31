@@ -1,0 +1,186 @@
+---
+title: "Th17"
+date: '2022-07-07'
+output: 
+    html_document:
+      toc: true
+      toc_depth: 4
+      toc_float: true
+      number_sections: true
+      code_folding: "hide"
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# rm(list = ls())
+
+```
+
+```{r message = F, warning= FALSE}
+library(dplyr)
+library(lubridate) #date import
+library(MASS)
+library(readr)
+library(mediation)
+library(zoo)
+library(readr)
+library(tableone)
+require(openxlsx)
+library(naniar)
+library(readr)
+library(writexl) 
+library(dplyr)
+library(gridtext)
+library(MASS)
+library(ggplot2)
+library(caTools)
+library(corrplot)
+library(patchwork)
+library(gplots)
+require(openxlsx)
+library(gridExtra)
+library(readxl)
+library(tidyr)
+library(conflicted)
+
+conflict_prefer("select", "dplyr")
+conflict_prefer("select", "dplyr")
+conflict_prefer("first", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflicted::conflicts_prefer(dplyr::slice)
+```
+
+# PRT cohort (n = 410)
+```{r message=FALSE}
+checkComplete <- function(data){
+
+data %>% summarise_all(function(x) (100 * mean(!is.na(x)))) %>% t()
+
+}
+checkMissing <- function(data)
+  {
+  
+data %>% summarise_all(function(x) (sum(is.na(x)))) %>% t()
+
+                       }
+```
+
+## read files 
+```{r}
+library(here)
+
+df_PRT<- read_csv("dfPRT_669_part1.csv") %>% dplyr::select(-...1)
+```
+
+
+## analysis 
+
+### lm y ~ covariates (y~x+covariates)
+
+
+```{r}
+linear_models = function(df,covariates,outcomes){
+  ci = list()
+  coef = list()
+  cname = c()
+  j=1
+  for (i in covariates){
+    for (k in outcomes)
+    {
+      model = lm(paste( k[[1]]," ~",i[[1]]), data=df) 
+      fit.moedel<- summary(model)
+      # result[[j]] = fit.moedel
+      ci= confint(model)[-1,]
+      coef[[j]] = c(fit.moedel$coefficients[2,c(1,4) ] ,ci)
+      
+      j= j+1
+      cname = c(cname,paste(k[[1]]," ~", i[[1]]))
+      
+
+    }
+      
+    
+  }
+  coef = as.data.frame(coef) %>% t()
+  row.names(coef) = cname
+  return(coef)
+}
+
+linear_models_covariate_adjust = function(df,x,covariates,outcomes){
+  result = list()
+  coef = list()
+  cname = c()
+  j=1
+  for (i in covariates){
+    for (k in outcomes)
+    {
+      model = lm(paste( k[[1]]," ~",x ,'+', i[[1]]), data=df) 
+      fit.moedel<- summary(model)
+      result[[j]] = fit.moedel
+      coef[[j]] = fit.moedel$coefficients[c(2:3),c(1,4) ] 
+      j= j+1
+      cname = c(cname,paste("Estimate:",k[[1]]," ~",x,'+', i[[1]]))
+      cname = c(cname,paste("P-value:",k[[1]]," ~",x,'+', i[[1]]))
+    }
+      
+    
+  }
+  coef = as.data.frame(coef) %>% t()
+  row.names(coef) = cname
+  return(coef)
+}
+x= c("age")
+covariates = c("subject_sex","NHW","DMT_cat")
+
+outcomes = outcome
+df = df_PRT
+univariate_PRT =linear_models(df_PRT,covariates = c(covariates),outcome)
+covariate_adjust_PRT = linear_models_covariate_adjust(df_PRT,x,covariates,outcome)
+list_of_datasets <- list("Univariates" = univariate_PRT, "Y ~ age + covariates " = covariate_adjust_PRT,"Y ~ age" = PRT, "Y ~ age + ALLcovariates " = PRT_adjust)
+write.xlsx(list_of_datasets, file = paste("PRT_RegressionAnslysis",today(),".xlsx",sep = ""),rowNames = T,overwrite = T)
+
+Cov_all = c( "subject_sex",   "DMT_cat"    ,"NHW" ,"age")
+sex_cov = c("subject_sex")
+df = df_PRT %>% filter(diagnosis == "RRMS")
+univariate_PRT_RMS =linear_models(df,Cov_all,outcome)
+covariate_adjust_PRT_RMS = linear_models_covariate_adjust(df,x,sex_cov,outcome) %>% as.data.frame() %>% mutate(diagnosis = "RRMS")
+
+Covs_SPMS = c( "subject_sex",   "DMT_cat" ,"age")
+
+df = df_PRT %>% filter(diagnosis == "SPMS")
+univariate_PRT_SPMS =linear_models(df,Covs_SPMS ,outcome)
+covariate_adjust_PRT_SPMS = linear_models_covariate_adjust(df,x,sex_cov,outcome) %>% as.data.frame() %>% mutate(diagnosis = "RRMS")
+
+
+listofdf = list("RMS Univariate" = univariate_PRT_RMS, "SPMS Univariate" = univariate_PRT_SPMS, 
+                "Adjusted" = rbind(covariate_adjust_PRT_RMS,covariate_adjust_PRT_SPMS)
+                )
+write.xlsx(listofdf, file = paste("P1_Subtype_lm",today(),".xlsx",sep = ""),rowNames = T,overwrite = T)
+
+
+```
+
+```{r}
+
+# age+subject_sex+NHW+diagnosis+DMT_cat
+
+PRT_race = list()
+fit_an=lm(annualized_relapse~age+subject_sex,df_PRT)
+fit_summary_an = summary(fit_an)   
+ci = confint(fit_an)[-1,]
+PRT_race = as.data.frame(fit_summary_an$coefficients[2:3,c(1,4) ])
+PRT_race = cbind(PRT_race,ci)
+
+write.xlsx(PRT_race, file = paste("PRT_Multi_Regression",today(),".xlsx",sep = ""),rowNames = T,overwrite = T)
+
+```
+
+```{r}
+summary_tbl = CreateTableOne(vars = var[-1], data = df_PRT, factorVars = catVar,strata = "subject_sex")
+summary_tbl = print(summary_tbl, exact = "stage", smd = F)
+write.csv(summary_tbl, file = paste("TH17_part1StatsTable_by_sex",today(),".csv"))
+
+```
+

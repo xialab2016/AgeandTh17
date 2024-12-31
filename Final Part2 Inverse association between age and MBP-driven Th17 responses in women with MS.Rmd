@@ -1,0 +1,563 @@
+---
+title: "Th17"
+date: '2022-07-07'
+output: 
+    html_document:
+      toc: true
+      toc_depth: 4
+      toc_float: true
+      number_sections: true
+      code_folding: "hide"
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# rm(list = ls())
+
+```
+
+```{r message = F, warning= FALSE}
+library(dplyr)
+library(lubridate) #date import
+library(MASS)
+library(readr)
+library(mediation)
+library(zoo)
+library(readr)
+library(tableone)
+require(openxlsx)
+library(naniar)
+library(readr)
+library(writexl) 
+library(dplyr)
+library(gridtext)
+library(MASS)
+library(ggplot2)
+library(caTools)
+library(corrplot)
+library(patchwork)
+library(gplots)
+require(openxlsx)
+library(gridExtra)
+library(readxl)
+library(tidyr)
+```
+
+
+# Th17 cohort (for mediation)
+```{r}
+# function for mediation ---------
+extract_mediation_summary <- function (x) { 
+
+  clp <- 100 * x$conf.level
+  isLinear.y <- ((class(x$model.y)[1] %in% c("lm", "rq")) || 
+                   (inherits(x$model.y, "glm") && x$model.y$family$family == 
+                      "gaussian" && x$model.y$family$link == "identity") || 
+                   (inherits(x$model.y, "survreg") && x$model.y$dist == 
+                      "gaussian"))
+
+  printone <- !x$INT && isLinear.y
+
+  if (printone) {
+
+    smat <- c(x$d1, x$d1.ci, x$d1.p)
+    smat <- rbind(smat, c(x$z0, x$z0.ci, x$z0.p))
+    smat <- rbind(smat, c(x$tau.coef, x$tau.ci, x$tau.p))
+    smat <- rbind(smat, c(x$n0, x$n0.ci, x$n0.p))
+
+    rownames(smat) <- c("Inirect Effect", "Direct Effect", "Total Effect", "Prop. Mediated")
+
+  } else {
+    smat <- c(x$d0, x$d0.ci, x$d0.p)
+    smat <- rbind(smat, c(x$d1, x$d1.ci, x$d1.p))
+    smat <- rbind(smat, c(x$z0, x$z0.ci, x$z0.p))
+    smat <- rbind(smat, c(x$z1, x$z1.ci, x$z1.p))
+    smat <- rbind(smat, c(x$tau.coef, x$tau.ci, x$tau.p))
+    smat <- rbind(smat, c(x$n0, x$n0.ci, x$n0.p))
+    smat <- rbind(smat, c(x$n1, x$n1.ci, x$n1.p))
+    smat <- rbind(smat, c(x$d.avg, x$d.avg.ci, x$d.avg.p))
+    smat <- rbind(smat, c(x$z.avg, x$z.avg.ci, x$z.avg.p))
+    smat <- rbind(smat, c(x$n.avg, x$n.avg.ci, x$n.avg.p))
+
+    rownames(smat) <- c("ACME (control)", "ACME (treated)", 
+                        "ADE (control)", "ADE (treated)", "Total Effect", 
+                        "Prop. Mediated (control)", "Prop. Mediated (treated)", 
+                        "ACME (average)", "ADE (average)", "Prop. Mediated (average)")
+
+  }
+
+  colnames(smat) <- c("Estimate", paste(clp, "% CI Lower", sep = ""), 
+                      paste(clp, "% CI Upper", sep = ""), "p-value")
+  smat
+
+}
+```
+
+## read files
+```{r message=FALSE, warning = F}
+
+load("MS_PRT_Demogs.RData")
+load("combined_data.RData")
+load("relapse_all.RData")  
+```
+
+
+# cohort summary 
+```{r}
+
+summary_cohort = Combined_data 
+var = c(covariates,outcome,x,"subtype") 
+catVar = c( "race_ethn","subtype_cat","dmt_cat")
+sumamry = CreateTableOne(vars = var ,factorVars = catVar, data = Combined_data,strata = "sex")
+summary_tbl = print(sumamry, exact = "stage", smd = F)
+
+
+```
+
+```{r}
+all_DMTs <- read_csv("D:/OneDrive/OneDrive - University of Pittsburgh/Raw Data/Data Queries/Results/all_DMTs.csv")
+rev_date <- as.Date("2021-05-15")
+MS_Drugs_Mechanism_Citations_Efficacy_20240217 <- read_excel("D:/OneDrive/OneDrive - University of Pittsburgh/Raw Data/MS Drugs Mechanism Citations Efficacy 20240217.xlsx") %>% dplyr::select(Treatment_BrandName,Treatment_GenericName)
+summary_cohort = summary_cohort %>% rename(id_participant = id)
+dmt_info <- all_DMTs %>%
+  right_join(dplyr::select(summary_cohort, id_participant, sample_date), by = "id_participant") %>%
+  mutate(sample_date = ifelse(is.na(sample_date),
+                                as.Date(rev_date, origin = "1970-01-01"),
+                                as.Date(sample_date, origin = "1970-01-01")))
+
+dmt_info$sample_date = as.Date(dmt_info$sample_date, origin = "1970-01-01")
+dmt_info$end = as.Date(dmt_info$end, origin = "1970-01-01")
+df <- dmt_info %>%
+  mutate(start_date = as.Date(start),
+         end_date = ifelse(is.na(end), Sys.Date(), end)) # Assume NA end_date means ongoing
+df$end_date = as.Date(df$end_date, origin = "1970-01-01")
+
+# Filter DMTs that are within the last 2 years from the date_reviewed
+df_filtered <- df %>%  mutate(
+    two_years_prior = sample_date %m-% years(2)
+  ) %>% 
+  # Filter rows where review date is within the last 2 years and within the treatment range
+  filter(sample_date >= start_date & sample_date <= end_date |
+           two_years_prior >= start_date & two_years_prior <= end_date  
+         )  %>%
+  filter(!is.na(start)) %>% group_by(id_participant) %>%
+  mutate(difference = abs(as.numeric(sample_date - start_date))) %>%
+  arrange(difference) %>%
+  slice(1) %>%
+  ungroup() %>% 
+  dplyr::select(id_participant, type) %>% 
+  left_join(MS_Drugs_Mechanism_Citations_Efficacy_20240217, by = c("type" = "Treatment_BrandName"))
+library(stringr)
+DMT_summary = summary_cohort %>% left_join(df_filtered) %>% 
+  mutate(
+    type = str_to_lower(Treatment_GenericName), # Convert type to lowercase first
+    DMT_efficacy  = case_when(
+      Treatment_GenericName %in% c("natalizumab", "ocrelizumab","mitoxantrone", "rituximab") ~ "high",
+      Treatment_GenericName %in% c("dimethyl fumarate", "fingolimod", "glatiramer acetate", "interferon beta-1a", "teriflunomide") ~ "standard",
+      is.na(type) ~ "None", # Assign "None" if type is NA
+      TRUE ~ "Other" # Optional: capture any types not listed above as "Other"
+    )
+  )
+var = c("age","subject_sex", "NHW","diagnosis_dur","diagnosis","DMT_efficacy")
+catVar = c( "subject_sex", "NHW","diagnosis","DMT_efficacy" )
+summary_tbl = CreateTableOne(vars = var, data = DMT_summary, factorVars = catVar )
+summary_tbl = print(summary_tbl, exact = "stage", smd = F)
+write.csv(summary_tbl, file = paste("TH17_part2StatsTableDMT_one",today(),".csv"))
+summary_tbl = CreateTableOne(vars = var, data = DMT_summary, factorVars = catVar,strata = "sex")
+summary_tbl = print(summary_tbl, exact = "stage", smd = F)
+write.csv(summary_tbl, file = paste("TH17_part2StatsTableDMT_by_sex",today(),".csv"))
+DMT_summary %>% filter(DMT_efficacy == "Other")
+```
+
+# univariate analysis
+
+##lm(M (Y) ~ adjust)
+```{r}
+lm_df_no_bg = read_csv("Final.csv") %>% dplyr::select(-...1)
+df= lm_df_no_bg
+Sex = "F"
+lm_df_no_bg_M = lm_df_no_bg %>% filter(sex == "M")
+lm_df_no_bg_F = lm_df_no_bg %>% filter(sex == "F")
+x_axisM = 40
+x_axis = 60
+x_axis = x_axis
+```
+
+
+```{r}
+linear_model_covariates = function(df){
+  result = list()
+  ci = list()
+  coef = list()
+  cname = c()
+  for (i in covariates){
+    for (k in Outcomes)
+    {
+      model = lm(paste( k[[1]]," ~",i[[1]]), data=df) 
+      fit.moedel<- summary(model)
+      result[[j]] = fit.moedel
+      coef[[j]] = fit.moedel$coefficients[2,c(1,4) ] 
+      ci[[j]] <- confint(model, level = 0.95)[2, ] 
+      j= j+1
+      cname = c(cname,paste(k[[1]]," ~", i[[1]]))
+    }
+      
+    
+
+    
+  }
+  ci = as.data.frame(ci) %>% t() 
+  row.names(ci) = cname
+
+  coef <-  as.data.frame(coef)
+  coef <- coef %>% t() %>% as.data.frame()
+  row.names(coef) = cname
+  names(coef) = c("Estimate","P-values")
+  coef = cbind(coef,ci)
+  return(coef)
+}
+
+j = 1
+Outcomes = c("e24_IL17a_mbp","e24_IFNg_mbp","relapse_time_gap","annualized_relapse","n")
+covariates = c("age","race_ethn","dmt_cat" ) 
+linearna_cov_removed = linear_model_covariates(df)
+linearna_cov_removedM = linear_model_covariates(lm_df_no_bg_M) %>% filter(rownames(linearna_cov_removed) =="e24_IL17a_mbp  ~ age" ) 
+linearna_cov_removedF = linear_model_covariates(lm_df_no_bg_F) %>% filter(rownames(linearna_cov_removed) =="e24_IL17a_mbp  ~ age" ) 
+Outcomes = c("annualized_relapse")
+covariates = c("e24_IL17a_mbp")
+
+Outcomes =c("e24_IFNg_mbp") 
+covariates =  c("age")
+linearna_cov_removedAll = linear_model_covariates(df)
+linearna_cov_removedM = linear_model_covariates(lm_df_no_bg_M)
+linearna_cov_removedF = linear_model_covariates(lm_df_no_bg_F) 
+linear_IL17ANN =  rbind(linearna_cov_removedAll,linearna_cov_removedF,linearna_cov_removedM)
+write.csv(linear_IL17ANN, file =paste("P2Sup_IFNGvsAge",Sys.Date(),".csv"))
+
+list_of_datasets <- list( "M(Y) ~ adjust removed bg" = linearna_cov_removed)
+```
+
+
+## lm y ~ x 
+
+```{r}
+linear_model_outcome = function(df){
+  result = list()
+  coef = list()
+  for (i in outcome){
+      model = lm(paste(i[[1]], "~ age" ), data=df) #"~e24_IL17a_mbp"
+      fit.moedel<- summary(model)
+      # print(fit.moedel)
+      result[[i]] = fit.moedel
+      # coef[[i]] = fit.moedel$coefficients[2,c(1,4) ]
+      ci <- confint(model, level = 0.95)[2, ] 
+      coef[[i]] <- c(fit.moedel$coefficients["age", c("Estimate", "Pr(>|t|)")], ci)
+      
+  }
+
+  coef <-  as.data.frame(coef)
+  coef <- coef %>% t() %>% as.data.frame()
+  return(coef)
+}
+df = lm_df_no_bg
+linearna_y = linear_model_outcome(df)
+Combine_df_3outcome50 = df %>%  mutate (age = ifelse(age>=50,1,0))
+linearna_50 = linear_model_outcome(Combine_df_3outcome50)
+
+list_of_datasets <- list("Y ~ age" = linearna_y,"Y ~ age50" = linearna_50)
+```
+
+## plot e24_IFNg_mbp  ~ age
+```{r}
+caption <- paste0("β = ",round(linearna_y$Estimate,2),"\n p = ",round(linearna_y$`Pr(>|t|)`),2)
+
+plot = ggplot(df, aes(x=age, y=n)) +
+  geom_point()+xlab(" ") +ylab("IL 17(pg/ml)") +   
+  annotate("text", x = 70, y = 65, col = "black", size = 6,
+               label = caption,hjust = 1.1,vjust = 1)+
+  geom_smooth(method=lm)+ theme_classic(base_size = 22)
+coef2 = linearna_cov_removed %>% filter(rownames(linearna_cov_removed) =="e24_IFNg_mbp  ~ age" ) %>% mutate(beta = round(Estimate,2), p = round(`P-values`,2))
+
+
+```
+
+```{r}
+truncate_sheet_names <- function(names) {
+  sapply(names, function(name) substr(name, 1, 31))
+}
+```
+
+
+## mediation test 
+### age cutoff = NA
+```{r}
+set.seed(123)
+df =   lm_df_no_bg
+cutoff = NA
+MediationResults = list() 
+coef = list() 
+coef2 = list() 
+outcome_names = c()
+j = 1
+MedVarList = list(c("age","e24_IL17a_mbp","annualized_relapse"))
+
+NBootstraps = 1000
+ 
+
+df =  lm_df_no_bg
+cutoff = NA
+MediationResults = list() 
+coef = list() 
+coef2 = list() 
+outcome_names = c()
+j = 1
+
+  if(is.na(cutoff) )
+  {    
+    modeldf = df 
+  } else{
+    modeldf = df %>% mutate (age = ifelse(age>=cutoff,1,0))
+  }
+  
+    for(i in MedVarList){
+      X <- unlist((i)[1])
+      M <- unlist((i)[2])
+      Y <- unlist((i)[3])
+      complete_model = modeldf[complete.cases(modeldf[ , c(X,M,Y)]), ]
+
+
+      FormulaM <- paste(M,"~", X, sep = " ")
+      FormulaY <- paste(Y,"~", X,"+",M, sep=' ')
+
+      model.M <- lm(FormulaM, data = complete_model)
+      fit.model<- summary(model.M)
+      coef[[j]] = fit.model$coefficients
+      model.Y <- lm(FormulaY, data = complete_model)
+      fit.modelY<- summary(model.Y)
+      coef2[[j]] = fit.modelY$coefficients
+      result <- summary(mediate(model.M, model.Y, treat=X, mediator=M,
+                                                           boot=TRUE, sims=NBootstraps))
+
+      MediationResults[[j]] = extract_mediation_summary(result)[-4,]
+      
+      outcome_names = c(outcome_names,paste(M,"&",Y,sep=""))
+      j <- j + 1
+
+    }
+
+MediationResults_bg =  MediationResults
+MediationResults_bg
+# create names that is 31 character
+short_names = truncate_sheet_names(outcome_names)
+# save outcome 
+wb <- createWorkbook()
+for (i in seq_along(MediationResults_bg)) {
+  addWorksheet(wb, short_names[i])
+  writeData(wb, sheet = short_names[i], MediationResults_bg[[i]], rowNames = TRUE)
+}
+
+saveWorkbook(wb, paste("P2_Mediate",Sex,today(),".xlsx"), overwrite = TRUE)
+
+```
+
+### age cutoff = 50
+```{r}
+set.seed(123)
+
+Sex = "F"
+if (Sex == "F") {
+  df =   lm_df_no_bg_F
+
+}else if(Sex == "M"){
+  df = lm_df_no_bg_M
+  
+}else{
+  df = lm_df_no_bg
+}
+
+cutoff = 50
+MediationResults = list() 
+coef = list() 
+coef2 = list() 
+outcome_names = c()
+j = 1
+
+  if(is.na(cutoff) )
+  {    
+    modeldf = df 
+  } else{
+    modeldf = df %>% mutate (age = ifelse(age>=cutoff,1,0))
+  }
+  
+    for(i in MedVarList){
+      X <- unlist((i)[1])
+      M <- unlist((i)[2])
+      Y <- unlist((i)[3])
+      complete_model = modeldf[complete.cases(modeldf[ , c(X,M,Y)]), ]
+
+
+      FormulaM <- paste(M,"~", X, sep = " ")
+      FormulaY <- paste(Y,"~", X,"+",M, sep=' ')
+
+      model.M <- lm(FormulaM, data = complete_model)
+      fit.model<- summary(model.M)
+      coef[[j]] = fit.model$coefficients
+      model.Y <- lm(FormulaY, data = complete_model)
+      fit.modelY<- summary(model.Y)
+      coef2[[j]] = fit.modelY$coefficients
+      result <- summary(mediate(model.M, model.Y, treat=X, mediator=M,
+                                                           boot=TRUE, sims=NBootstraps))
+
+      MediationResults[[j]] = extract_mediation_summary(result)[-4,]
+      outcome_names = c(outcome_names,paste(M,"&",Y,sep = ""))
+      j <- j + 1
+
+    }
+
+MediationResults_50_bg =  MediationResults
+MediationResults_50_bg
+short_names = truncate_sheet_names(outcome_names)
+# save outcome 
+wb <- createWorkbook()
+for (i in seq_along(MediationResults_50_bg)) {
+  addWorksheet(wb, short_names[i])
+  writeData(wb, sheet = short_names[i], MediationResults_50_bg[[i]], rowNames = TRUE)
+}
+saveWorkbook(wb, paste("P2_Mediate_50_",Sex,today(),".xlsx"), overwrite = TRUE)
+
+
+
+```
+
+#plotting: age vs IL17 scatter plot
+
+```{r}
+# library(ggpmisc)
+library(ggpubr)
+library(ggbeeswarm)
+
+plotCont = list()
+plotCat = list()
+coef1 = linearna_cov_removed %>% filter(rownames(linearna_cov_removed) =="e24_IL17a_mbp  ~ age" ) %>% mutate(beta = round(Estimate,2), p = round(`P-values`,2))
+caption <- paste0("β = ",coef1$beta,"\n p = ",coef1$p)
+
+plotCont[[1]] = ggplot(lm_df_no_bg, aes(x=age, y=e24_IL17a_mbp)) +
+  geom_point()+xlab(" ") +ylab("IL 17(pg/ml)") +   
+  annotate("text", x = 70, y = 65, col = "black", size = 9,
+               label = caption,hjust = 1.1,vjust = 1)+
+  geom_smooth(method=lm)+ theme_classic(base_size = 22)
+coef2 = linearna_cov_removed %>% filter(rownames(linearna_cov_removed) =="e24_IFNg_mbp  ~ age" ) %>% mutate(beta = round(Estimate,2), p = round(`P-values`,2))
+
+caption2 <- paste0("β = ",coef2$beta,"\n p = ",coef2$p)
+
+plotCont[[3]] = ggplot(lm_df_no_bg, aes(x=age, y=e24_IFNg_mbp)) +
+  geom_point()+xlab(" ") + ylab("IFNg(pg/ml)") + 
+
+  geom_smooth(method=lm)+ 
+    annotate("text", x = max(lm_df_no_bg$age), y = 160, col = "black", size = 9,
+               label = caption2, hjust = 1.1,vjust = 0.5)+
+  theme_classic(base_size = 22)
+
+
+lm_df_no_bg = lm_df_no_bg %>% mutate(age_cat = ifelse(age >= 50, "≥50", "<50"))
+
+```
+
+### box plot: 
+```{r}
+
+var = c("e24_IL17a_mbp","e24_IFNg_mbp")
+testdf = lm_df_no_bg %>% mutate(age_Cat = as.factor(age_cat))
+age_coef = CreateTableOne(vars = var, strata = "age_Cat" , data = testdf)
+age_coef <- print(age_coef, exact = "stage", smd = F)
+# age_coef[2,3]
+caption3 = paste("p = ",age_coef[2,3])
+plotCont[[2]] = ggplot(aes(x=age_cat,y=e24_IL17a_mbp,fill=age_cat),data=lm_df_no_bg)+
+  xlab(" ") + 
+    ylab(" ") + 
+  # geom_boxplot(width=.5)+
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_beeswarm() +
+   annotate(geom="text",label= caption3,x=2.2,y=75,size=9)+
+  #stat_compare_means(label.y = 50,label.x = 2,method = "t.test")   +
+  theme_classic(base_size = 22) + guides(fill="none")
+
+
+caption4 =  paste("p = ",age_coef[3,3])
+plotCont[[4]] = ggplot(aes(x=age_cat,y=e24_IFNg_mbp,fill=age_cat),data=lm_df_no_bg)+
+  xlab(" ") + 
+    ylab(" ") + 
+  geom_violin(alpha = 0.5, color = NA) +
+  geom_beeswarm() +
+  annotate(geom="text",label= caption4,x=2.2,y=160,size=9)+
+  theme_classic(base_size = 22) + guides(fill="none")
+
+
+library(gridtext)
+library(gridExtra)
+bottom = richtext_grob("<span style='font-size:15pt; color:black'> Age </span>", rot=0)
+
+
+arranged_plot <- grid.arrange(grobs = plotCont, ncol = 2, nrow = 2, 
+                              bottom = bottom, 
+                              # top = "Your top annotation",
+                              returnGrobs = TRUE)
+
+svg(paste("e24.VS.age_AFTER",today(),".svg",sep = ""),width = 12, height =15)
+do.call("grid.arrange", c(arranged_plot))
+dev.off()
+
+```
+
+# plot ARR vs IL17
+```{r}
+plot17 = list()
+linear_model_outcome_17 = function(df){
+  result = list()
+  coef = list()
+  for (i in outcome){
+      model = lm(paste(i[[1]], "~e24_IL17a_mbp" ), data=df)  
+      fit.moedel<- summary(model)
+      result[[i]] = fit.moedel
+      coef[[i]] = fit.moedel$coefficients[2,c(1,4) ]
+      print(fit.moedel$coefficients)
+      
+  }
+
+  coef <-  as.data.frame(coef)
+  coef <- coef %>% t() %>% as.data.frame()
+  return(coef)
+}
+outcome = c("annualized_relapse")
+linearna_y_removed_IL17= linear_model_outcome_17(df)
+
+write.csv(linearna_y_removed_IL17, file = paste("OutcomeVsIL17",today(),".csv"))
+
+coef2 = linearna_y_removed_IL17 %>% filter(rownames(linearna_y_removed_IL17) =="annualized_relapse" ) %>% mutate(beta = round(Estimate,2), p = round(`Pr(>|t|)`,2))
+caption2<- paste0("β = ",coef2$beta,"\n p = ",coef2$p)
+
+plot17[[1]] = ggplot(lm_df_no_bg, aes(y=annualized_relapse, x=e24_IL17a_mbp)) +
+  geom_point()+xlab(" ") +ylab("Annualized Relapse Rate") +   
+  annotate("text", 
+           y = 1.0,
+           x = x_axis, col = "black", size = 6,
+               label = caption2,hjust = 1.1,vjust = 1)+
+  geom_smooth(method=lm)+ theme_classic(base_size = 22)+
+  ylim(NA, 1.0)
+
+
+bottom = richtext_grob("<span style='font-size:22pt; color:black'> IL 17(pg/ml) </span>", rot=0)
+
+
+arranged_plot17 <- grid.arrange(grobs = plot17, ncol = 1, nrow = 1, 
+                              bottom = bottom, 
+                              # top = "Your top annotation",
+                              returnGrobs = TRUE)
+
+svg(paste("Outcome vs IL17 ",today(),".svg",sep = ""),width = 10, height =6)
+do.call("grid.arrange", c(arranged_plot17))
+dev.off()
+stop()
+```

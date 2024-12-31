@@ -1,0 +1,321 @@
+---
+title: "Th17"
+date: '2022-07-07'
+output: 
+    html_document:
+      toc: true
+      toc_depth: 4
+      toc_float: true
+      number_sections: true
+      code_folding: "hide"
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# rm(ls)
+```
+
+```{r message = F, warning= FALSE}
+library(dplyr)
+library(lubridate) #date import
+library(MASS)
+library(readr)
+library(mediation)
+library(zoo)
+library(readr)
+library(tableone)
+require(openxlsx)
+library(naniar)
+library(readr)
+library(writexl) 
+library(dplyr)
+library(gridtext)
+library(MASS)
+library(ggplot2)
+library(caTools)
+library(corrplot)
+library(patchwork)
+library(gplots)
+require(openxlsx)
+library(gridExtra)
+library(readxl)
+library(tidyr)
+```
+
+# Part3: multiplex 
+
+
+```{r}
+# read in raw files
+library(janitor)
+library(pheatmap)
+library(gplots)
+library(RColorBrewer)
+library(dendextend)
+library(ComplexHeatmap)
+Combine_df_3outcome = read_csv("FinalModel_804yrs.csv") %>% dplyr::select(-...1)
+ValueMultiplex <- read_excel("ValueMultiplex-71 Values.xlsx")
+ControlMultiplex <- read_excel("ControlMultiplex-71 Values.xlsx")
+Multiplex_mbp <- read_csv("Multiplex_mbp.csv")
+# read in values and change na to 0s
+cytokines = c( "sCD40L", "EGF", "Eotaxin", "FGF.2", "FLT.3L", "Fractalkine", 
+"G.CSF", "GM.CSF", "GROa", "IFN.a2", "IFNg", "IL.1a", "IL.1b", 
+"IL.1RA", "IL.2", "IL.3", "IL.4", "IL.5", "IL.6", "IL.8", "IL.9", 
+"IL.10", "IL.12p40", "IL.12p70", "IL.13", "IL.15", "IL.17A", 
+"IL.17E.IL.25", "IL.17F", "IL.18", "IL.27", "IP.10", "MCP.1", 
+"MCP.3", "M.CSF", "MDC", "MIG.CXCL9", "MIP.1a", "MIP.1b", "PDGF.AA", 
+"PDGF.AB.BB", "RANTES", "TGFa", "TNFa", "TNFb", "VEGF.A", "BCA.1", 
+"ENA.78", "Eotaxin.2", "I.309", "IL.16", "IL.23", "MCP.2", "MCP.4", 
+"SDF.1ab", "TARC", "TRAIL")
+
+sig_cytokine.0 = c("Fractalkine", "MDC","IL.4", "MCP.2", "MCP.3",  "PDGF.AA","PDGF.AB.BB")
+
+ValueM = as.data.frame(sapply((ValueMultiplex %>% t() %>% as.data.frame()),as.numeric)) %>% mutate_if(is.numeric, ~replace(., is.na(.), 0))
+
+ControlMultiplex[,-1] = as.data.frame(sapply(ControlMultiplex[,-1], as.numeric))%>% mutate_if(is.numeric, ~replace(., is.na(.), 0))
+colnames(ValueM) = cytokines
+row.names(ValueM) = Multiplex_mbp$id
+
+
+
+ControlMultiplex = ControlMultiplex%>% t() %>% as.data.frame() %>% row_to_names(row_number = 1)
+names(ControlMultiplex) = cytokines
+
+#--- subtract value by group control --- 
+ValueM = data.frame(sapply((rbind(ValueM,ControlMultiplex)), as.numeric) )
+ValueM[1:5,]=ValueM[1:5,]- ValueM[rep(29,5),] #subtract: individual - group BG 
+ValueM[6:10,]=ValueM[6:10,]- ValueM[rep(30,5),]
+ValueM[11:15,]=ValueM[11:15,]- ValueM[rep(31,5),]
+ValueM[16:20,]=ValueM[16:20,]- ValueM[rep(32,5),]
+ValueM[21:24,]=ValueM[21:24,]- ValueM[rep(33,4),]
+ValueM[25:28,]=ValueM[25:28,]- ValueM[rep(34,4),]
+ValueM = ValueM[1:28,] 
+ValueM[ValueM < 0] <- 0
+ValueM$id = Multiplex_mbp$id
+load("MS_PRT_Demogs.RData")
+
+heatmap_df = data.frame(ValueM %>% left_join(dplyr::select(MS_PRT_Demogs,age,id_participant), by = c("id"= "id_participant"))) %>%  mutate_all(~replace(., is.na(.), 0))
+
+heatmap_df_0 = heatmap_df
+```
+
+## significant cytokine 
+### find out significant cytokine: 
+
+```{r}
+linear_models = function(df,covariates,outcomes){
+  result = list()
+  coef = list()
+  cname = c()
+  ci = list()
+  j=1    
+  for (k in outcomes)  {
+  for (i in covariates){
+
+  
+      model = lm(paste( k[[1]]," ~",i[[1]]), data=df) 
+      fit.moedel<- summary(model)
+      result[[j]] = fit.moedel
+      coef[[j]] = fit.moedel$coefficients[2,c(1,4) ] 
+      ci[[j]] <- confint(model, level = 0.95)[2, ] 
+
+      j= j+1
+      cname = c(cname,paste(k[[1]]," ~", i[[1]]))
+    }
+      
+    
+  }
+   ci = as.data.frame(ci) %>% t() 
+  row.names(ci) = cname
+
+  coef <-  as.data.frame(coef)
+  coef <- coef %>% t() %>% as.data.frame()
+  row.names(coef) = cname
+  names(coef) = c("Estimate","P-values")
+  coef = cbind(coef,ci)
+  
+  return(coef)
+}
+heatmap_df_0 = heatmap_df_0 %>% mutate(age50 = ifelse(age>= 50, 1, 0), age55 = ifelse(age >= 55,1,0))
+ages = c("age","age50")
+sig_cy.0 = as.data.frame(linear_models(heatmap_df_0,cytokines,covariates = ages))
+sig_cy.0_na = sig_cy.0 %>% mutate(Estimate = ifelse(sig_cy.0[,2] <0.05,Estimate, NA))
+sig_cy.0_plot = sig_cy.0_na %>% filter(!is.na(Estimate))
+sig = sig_cy.0%>% filter(`P-values` <=0.05)
+list_of_datasets <- list("Full" = sig_cy.0,"sig" = sig)
+# write.xlsx(list_of_datasets, file =paste( "P3_Univar_Analysis_Ci",today(),  ".xlsx"),rowNames = T,overwrite =T)
+```
+
+### mediation (Cont age)
+```{r}
+set.seed(123)
+Y = c("annualized_relapse")
+df =  heatmap_df_0 %>% left_join(dplyr::select(Combine_df_3outcome,id,annualized_relapse), by = c("id"))
+# save(df,file = "df_cyWoutcome.Rdata")
+cutoff = NA
+MediationResults = list() 
+MedVarList = list() 
+coef = list() 
+coef2 = list() 
+outcome_names = c()
+j = 1
+
+sig_cytokine.0 = c("Fractalkine", "MDC","IL.4", "MCP.2", "MCP.3",  "PDGF.AA","PDGF.AB.BB")
+for (outcome in Y) {
+  for (cyt in sig_cytokine.0) {
+    MedVarList[j] = list(c("age",cyt[1],outcome[1]))
+    j = j+1
+  }
+} 
+
+NBootstraps = 1000
+j = 1
+  if(is.na(cutoff) )
+  {    
+    modeldf = df 
+  } else{
+    modeldf = df %>% mutate (age = ifelse(age>=cutoff,1,0))
+  }
+  
+    for(i in MedVarList){
+      X <- unlist((i)[1])
+      M <- unlist((i)[2])
+      Y <- unlist((i)[3])
+      complete_model = modeldf[complete.cases(modeldf[ , c(X,M,Y)]), ]
+
+      FormulaM <- paste(M,"~", X, sep = " ")
+      FormulaY <- paste(Y,"~", X,"+",M, sep=' ')
+
+      model.M <- lm(FormulaM, data = complete_model)
+      fit.model<- summary(model.M)
+      coef[[j]] = fit.model$coefficients
+      model.Y <- lm(FormulaY, data = complete_model)
+      fit.modelY<- summary(model.Y)
+      coef2[[j]] = fit.modelY$coefficients
+      result <- summary(mediate(model.M, model.Y, treat=X, mediator=M,boot=TRUE, sims=NBootstraps))
+
+      MediationResults[[j]] = extract_mediation_summary(result)[-4,]
+      outcome_names = c(outcome_names,paste(Y,"&",M))
+      j <- j + 1
+
+    }
+
+truncate_sheet_names <- function(names) {
+  sapply(names, function(name) substr(name, 1, 31))
+}
+MediationResults_cytokines =  MediationResults
+MediationResults_cytokines
+short_names = truncate_sheet_names(outcome_names)
+# save outcome 
+wb <- createWorkbook()
+for (i in seq_along(MediationResults_cytokines)) {
+  addWorksheet(wb, short_names[i])
+  writeData(wb, sheet = short_names[i], MediationResults_cytokines[[i]], rowNames = TRUE)
+}
+saveWorkbook(wb, paste("P3_Mediate_Cyt_",today(),".xlsx"), overwrite = TRUE)
+
+```
+
+```{r age50}
+set.seed(123)
+Y = c("annualized_relapse")
+df =  heatmap_df_0 %>% left_join(dplyr::select(Combine_df_3outcome,annualized_relapse,id))
+cutoff = 50
+MediationResults = list() 
+MedVarList = list() 
+coef = list() 
+coef2 = list() 
+outcome_names = c()
+j = 1
+
+for (outcome in Y) {
+  for (cyt in sig_cytokine.0) {
+    MedVarList[j] = list(c("age",cyt[1],outcome[1]))
+    j = j+1
+  }
+} 
+
+NBootstraps = 1000
+j = 1
+  if(is.na(cutoff) )
+  {    
+    modeldf = df 
+  } else{
+    modeldf = df %>% mutate (age = ifelse(age>=cutoff,1,0))
+  }
+  
+    for(i in MedVarList){
+      X <- unlist((i)[1])
+      M <- unlist((i)[2])
+      Y <- unlist((i)[3])
+      complete_model = modeldf[complete.cases(modeldf[ , c(X,M,Y)]), ]
+
+      FormulaM <- paste(M,"~", X, sep = " ")
+      FormulaY <- paste(Y,"~", X,"+",M, sep=' ')
+
+      model.M <- lm(FormulaM, data = complete_model)
+      fit.model<- summary(model.M)
+      coef[[j]] = fit.model$coefficients
+      model.Y <- lm(FormulaY, data = complete_model)
+      fit.modelY<- summary(model.Y)
+      coef2[[j]] = fit.modelY$coefficients
+      result <- summary(mediate(model.M, model.Y, treat=X, mediator=M,boot=TRUE, sims=NBootstraps))
+
+      MediationResults[[j]] = extract_mediation_summary(result)[-4,]
+      outcome_names = c(outcome_names,paste(Y,"&",M))
+      j <- j + 1
+
+    }
+
+
+
+MediationResults_cytokines50 =  MediationResults
+MediationResults_cytokines50
+short_names = truncate_sheet_names(outcome_names)
+# save outcome 
+wb <- createWorkbook()
+for (i in seq_along(MediationResults_cytokines50)) {
+  addWorksheet(wb, short_names[i])
+  writeData(wb, sheet = short_names[i], MediationResults_cytokines50[[i]], rowNames = TRUE)
+}
+saveWorkbook(wb, paste("P3_Mediate_Cyt_50_",today(),".xlsx"), overwrite = TRUE)
+
+
+```
+
+### New heatmap
+```{r}
+sig_cytokine.0 = c("Fractalkine", "MDC","IL.4", "MCP.2", "MCP.3",  "PDGF.AA","PDGF.AB.BB")
+
+row.names(heatmap_df) = heatmap_df$id
+
+heatmap_df <- heatmap_df[order(heatmap_df$age),]
+age = heatmap_df$age
+heatmap_df =as.data.frame( heatmap_df %>% dplyr:: select(c(-id,-age)) %>% scale(.) )
+heatmap_df$age = age
+heatmap_dfSig = data.matrix(heatmap_df[c(sig_cytokine.0,"age")])
+
+heatmap_df = data.matrix(heatmap_df)
+# heatmap_df[,-58]
+coul <- colorRampPalette(brewer.pal(8, "Set2"))(25)
+col = bluered(100)
+
+svg("heatmap_ageFull_5age.svg",width = 15, height =10)
+Heatmap(heatmap_df[,-c(58:60)], col = col,  column_title = "Order id by age",right_annotation = rowAnnotation(age = heatmap_df[,60]),column_names_side = "top",  row_order = rownames(heatmap_df), )
+
+dev.off()
+
+svg("heatmap_Full_5.svg",width = 15, height = 10)
+m1 = Heatmap(heatmap_df[,-c(58:60)], col = col,row_split  = 5, column_title = "NOT order id by age",left_annotation = rowAnnotation(age = heatmap_df[,60]),row_names_side = "left")
+plot(m1)
+dev.off()
+
+
+svg("heatmap_age_SigOnly.0.svg",width = 15, height =10)
+Heatmap(heatmap_dfSig[,c(sig_cytokine.0)], col = col, cluster_rows=FALSE,cluster_columns =FALSE,row_dend_reorder = F, column_title = "order id by age",right_annotation = rowAnnotation(age = heatmap_dfSig[,7]),column_names_side = "top",  row_order = rownames(heatmap_dfSig), )
+
+dev.off()
+
+```
